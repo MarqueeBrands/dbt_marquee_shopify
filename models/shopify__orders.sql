@@ -1,25 +1,7 @@
-{{
-    config(
-        materialized='table' if target.type in ('bigquery', 'databricks', 'spark') else 'incremental',
-        unique_key='orders_unique_key',
-        incremental_strategy='delete+insert' if target.type in ('postgres', 'redshift', 'snowflake') else 'merge',
-        cluster_by=['order_id']
-        ) 
-}}
-
 with orders as (
 
-    select 
-        *,
-        {{ dbt_utils.generate_surrogate_key(['source_relation', 'order_id']) }} as orders_unique_key
+    select *
     from {{ var('shopify_order') }}
-
-    {% if is_incremental() %}
-    where cast(coalesce(updated_timestamp, created_timestamp) as date) >= {{ shopify.shopify_lookback(
-        from_date="max(cast(coalesce(updated_timestamp, created_timestamp) as date))", 
-        interval=var('lookback_window', 7), 
-        datepart='day') }}
-    {% endif %}
 
 ), order_lines as (
 
@@ -66,7 +48,7 @@ with orders as (
         source_relation,
         sum(case when type = 'shipping' then amount else 0 end) as shipping_discount_amount,
         sum(case when type = 'percentage' then amount else 0 end) as percentage_calc_discount_amount,
-        sum(case when type = 'fixed_amount' then amount else 0 end) as fixed_amount_discount_amount,
+        sum(case when type = 'shipping' then amount else 0 end) as fixed_amount_discount_amount,
         count(distinct code) as count_discount_codes_applied
 
     from order_discount_code
@@ -167,10 +149,7 @@ with orders as (
 
     select 
         *,
-        row_number() over (
-            partition by {{ shopify.shopify_partition_by_cols('customer_id', 'source_relation') }}
-            order by created_timestamp) 
-            as customer_order_seq_number
+        row_number() over (partition by customer_id, source_relation order by created_timestamp) as customer_order_seq_number
     from joined
 
 ), new_vs_repeat as (

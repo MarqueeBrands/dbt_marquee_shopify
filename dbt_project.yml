@@ -1,15 +1,21 @@
 name: 'shopify'
-version: '0.10.0'
+version: '0.11.0'
 config-version: 2
 require-dbt-version: [">=1.3.0", "<2.0.0"]
 models:
   shopify:
-    +schema: shopify
+    +schema: mart_shopify
+    +database: marts
     +materialized: table
+    +tags: shopify
     intermediate:
-      +materialized: ephemeral
+      +materialized: table
+      +schema: int_shopify
+      +database: intermediate
+      +tags: shopify
       int_shopify__customer_email_rollup:
         +materialized: view # so we can use the dbt_utils.star macro
+        +tags: shopify
         
 vars:
   shopify:

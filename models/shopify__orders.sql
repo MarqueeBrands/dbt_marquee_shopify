@@ -1,25 +1,7 @@
-{{
-    config(
-        materialized='table' if target.type in ('bigquery', 'databricks', 'spark') else 'incremental',
-        unique_key='orders_unique_key',
-        incremental_strategy='delete+insert' if target.type in ('postgres', 'redshift', 'snowflake') else 'merge',
-        cluster_by=['order_id']
-        ) 
-}}
-
 with orders as (
 
-    select 
-        *,
-        {{ dbt_utils.generate_surrogate_key(['source_relation', 'order_id']) }} as orders_unique_key
+    select *
     from {{ var('shopify_order') }}
-
-    {% if is_incremental() %}
-    where cast(coalesce(updated_timestamp, created_timestamp) as date) >= {{ shopify.shopify_lookback(
-        from_date="max(cast(coalesce(updated_timestamp, created_timestamp) as date))", 
-        interval=var('lookback_window', 7), 
-        datepart='day') }}
-    {% endif %}
 
 ), order_lines as (
 
@@ -55,7 +37,7 @@ with orders as (
     group by 1,2
 
 ), order_discount_code as (
-    
+
     select *
     from {{ var('shopify_order_discount_code') }}
 
@@ -66,7 +48,7 @@ with orders as (
         source_relation,
         sum(case when type = 'shipping' then amount else 0 end) as shipping_discount_amount,
         sum(case when type = 'percentage' then amount else 0 end) as percentage_calc_discount_amount,
-        sum(case when type = 'fixed_amount' then amount else 0 end) as fixed_amount_discount_amount,
+        sum(case when type = 'shipping' then amount else 0 end) as fixed_amount_discount_amount,
         count(distinct code) as count_discount_codes_applied
 
     from order_discount_code
@@ -78,7 +60,7 @@ with orders as (
         order_id,
         source_relation,
         {{ fivetran_utils.string_agg("distinct cast(value as " ~ dbt.type_string() ~ ")", "', '") }} as order_tags
-    
+
     from {{ var('shopify_order_tag') }}
     group by 1,2
 
@@ -88,7 +70,7 @@ with orders as (
         order_id,
         source_relation,
         {{ fivetran_utils.string_agg("distinct cast(value as " ~ dbt.type_string() ~ ")", "', '") }} as order_url_tags
-    
+
     from {{ var('shopify_order_url_tag') }}
     group by 1,2
 
@@ -110,16 +92,21 @@ with orders as (
     select
         orders.*,
         coalesce(cast({{ fivetran_utils.json_parse("total_shipping_price_set",["shop_money","amount"]) }} as {{ dbt.type_float() }}) ,0) as shipping_cost,
-        
+
         order_adjustments_aggregates.order_adjustment_amount,
         order_adjustments_aggregates.order_adjustment_tax_amount,
 
         refund_aggregates.refund_subtotal,
         refund_aggregates.refund_total_tax,
 
+        -- (orders.total_price
+        --     + coalesce(order_adjustments_aggregates.order_adjustment_amount,0) + coalesce(order_adjustments_aggregates.order_adjustment_tax_amount,0) 
+        --     - coalesce(refund_aggregates.refund_subtotal,0) - coalesce(refund_aggregates.refund_total_tax,0)) as order_adjusted_total,
+        -- order_lines.line_item_count,
+
         (orders.total_price
-            + coalesce(order_adjustments_aggregates.order_adjustment_amount,0) + coalesce(order_adjustments_aggregates.order_adjustment_tax_amount,0) 
-            - coalesce(refund_aggregates.refund_subtotal,0) - coalesce(refund_aggregates.refund_total_tax,0)) as order_adjusted_total,
+            + coalesce(order_adjustments_aggregates.order_adjustment_amount,0) + 
+            - coalesce(refund_aggregates.refund_subtotal,0) ) as order_adjusted_total,
         order_lines.line_item_count,
 
         coalesce(discount_aggregates.shipping_discount_amount, 0) as shipping_discount_amount,
@@ -162,10 +149,7 @@ with orders as (
 
     select 
         *,
-        row_number() over (
-            partition by {{ shopify.shopify_partition_by_cols('customer_id', 'source_relation') }}
-            order by created_timestamp) 
-            as customer_order_seq_number
+        row_number() over (partition by customer_id, source_relation order by created_timestamp) as customer_order_seq_number
     from joined
 
 ), new_vs_repeat as (
